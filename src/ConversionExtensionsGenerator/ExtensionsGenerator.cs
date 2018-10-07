@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -19,9 +20,13 @@ namespace ConversionExtensionsGenerator
         private readonly bool _ignoreCase;
         private readonly bool _stopOnError;
 
-        public ExtensionsGenerator(string extensionsOutputNamespace, Assembly sourceAssembly, string sourceNamespace, Assembly targetAssembly, string targetNamespace)
+        public ExtensionsGenerator(string extensionsOutputNamespace, Assembly sourceAssembly, string sourceNamespace,
+            Assembly targetAssembly, string targetNamespace)
         {
             //TODO: Add options and fluent rules for ignore, mapping, etc.
+            //TODO: Check for bugs in generation and missed fields
+            //TODO: Fix tech debt and improve code quality
+            //TODO: Make full analysis of structures before generation
             _extensionsOutputNamespace = extensionsOutputNamespace;
             _sourceAssembly = sourceAssembly;
             _targetAssembly = targetAssembly;
@@ -33,21 +38,22 @@ namespace ConversionExtensionsGenerator
         {
             var result = new GenerationResult();
 
-            var mappings = GenerateClassMappings();
+            var classMappings = GenerateClassMappings();
 
-            if (mappings.Errors.Any())
+            if (classMappings.Errors.Any())
             {
-                result.Errors.AddRange(mappings.Errors);
+                result.Errors.AddRange(classMappings.Errors);
                 if (_stopOnError)
                 {
                     return result;
                 }
             }
 
-            foreach (var typeMapping in mappings.Mappings)
+            foreach (var typeMapping in classMappings.Mappings)
             {
                 //TODO: Remove duplicates - think about all mappings in one collection
-                var sourceFieldsMappingsResult = GenerateFieldsAndPropertiesMappings(typeMapping.SourceClassType, typeMapping.TargetClassType);
+                var sourceFieldsMappingsResult = GenerateFieldsAndPropertiesMappings(typeMapping.SourceClassType,
+                    typeMapping.TargetClassType, classMappings.Mappings);
                 if (sourceFieldsMappingsResult.Errors.Any())
                 {
                     result.Errors.AddRange(sourceFieldsMappingsResult.Errors);
@@ -57,7 +63,8 @@ namespace ConversionExtensionsGenerator
                     }
                 }
 
-                var targetFieldsMappingsResult = GenerateFieldsAndPropertiesMappings(typeMapping.TargetClassType, typeMapping.SourceClassType);
+                var targetFieldsMappingsResult = GenerateFieldsAndPropertiesMappings(typeMapping.TargetClassType,
+                    typeMapping.SourceClassType, classMappings.Mappings);
                 if (targetFieldsMappingsResult.Errors.Any())
                 {
                     result.Errors.AddRange(targetFieldsMappingsResult.Errors);
@@ -67,7 +74,8 @@ namespace ConversionExtensionsGenerator
                     }
                 }
 
-                var extensionFile = GenerateExtensionFile(typeMapping.SourceClassType, typeMapping.TargetClassType, sourceFieldsMappingsResult.Mappings, targetFieldsMappingsResult.Mappings);
+                var extensionFile = GenerateExtensionFile(typeMapping.SourceClassType, typeMapping.TargetClassType,
+                    sourceFieldsMappingsResult.Mappings, targetFieldsMappingsResult.Mappings);
                 result.ExtensionFiles.Add(extensionFile);
             }
 
@@ -89,6 +97,37 @@ namespace ConversionExtensionsGenerator
             return (type.IsClass || (type.IsValueType && !type.IsEnum)) && type.Namespace == @namespace;
         }
 
+        protected static bool IsClassOrStruct(Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            return (type.IsClass || (type.IsValueType && !type.IsEnum)) &&
+                   (!type.IsPrimitive && type != typeof(string) && type != typeof(Guid));
+        }
+
+        protected static bool IsEnum(Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            return type.IsEnum;
+        }
+
+        protected static bool IsGenericCollection(Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            return type.GetInterface(nameof(IEnumerable)) != null && type != typeof(string) && type.IsGenericType;
+        }
+
         protected ClassMappingResult GenerateClassMappings()
         {
             //TODO: Add patterns for naming (something like Regex pattern for name mathing)
@@ -99,10 +138,7 @@ namespace ConversionExtensionsGenerator
 
             foreach (var sourceType in sourceTypes)
             {
-
-                var matchedTargetType = targetTypes.FirstOrDefault(x =>
-                    x.Name.StartsWith(sourceType.Name, _ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture));
-
+                var matchedTargetType = targetTypes.FirstOrDefault(x => x.Name.StartsWith(sourceType.Name, _ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture));
                 if (matchedTargetType == null)
                 {
                     result.Errors.Add(new GenerationLogItem(LogLevel.Error, $"Target type for: '{sourceType.FullName}' was not found."));
@@ -122,8 +158,7 @@ namespace ConversionExtensionsGenerator
 
             foreach (var targetType in targetTypes)
             {
-                var matchedSourceType = sourceTypes.FirstOrDefault(x =>
-                    x.Name.StartsWith(targetType.Name, _ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture));
+                var matchedSourceType = sourceTypes.FirstOrDefault(x => x.Name.StartsWith(targetType.Name, _ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture));
 
                 if (matchedSourceType == null)
                 {
@@ -148,25 +183,34 @@ namespace ConversionExtensionsGenerator
             return result;
         }
 
-        protected ExtensionFile GenerateExtensionFile(Type sourceType, Type targetType, List<ClassMemberMappingInfo> sourceFieldsMappings, List<ClassMemberMappingInfo> targetFieldsMappings)
+        protected ExtensionFile GenerateExtensionFile(Type sourceType, Type targetType,
+            List<ClassMemberMappingInfo> sourceFieldsMappings, List<ClassMemberMappingInfo> targetFieldsMappings)
         {
-            var classDeclaration = GenerateExtensionClass(sourceType, targetType, sourceFieldsMappings, targetFieldsMappings);
+            var classDeclaration =
+                GenerateExtensionClass(sourceType, targetType, sourceFieldsMappings, targetFieldsMappings);
 
             var result = CompilationUnit()
                 .WithUsings(List(new[]
                 {
-                    UsingDirective(GenerateNamespaceSyntax(sourceType.Namespace))
-                    .WithUsingKeyword(Token(TriviaList(Comment("/* This class is auto generated */")), UsingKeyword, TriviaList())),
+                    UsingDirective(GenerateNamespaceSyntax("System")).WithUsingKeyword(
+                        Token(TriviaList(Comment("/* This class is auto generated */")), UsingKeyword, TriviaList())),
+                    UsingDirective(GenerateNamespaceSyntax("System.Collections.Generic")),
+                    UsingDirective(GenerateNamespaceSyntax("System.Linq")),
+                    UsingDirective(GenerateNamespaceSyntax(sourceType.Namespace)),
                     UsingDirective(GenerateNamespaceSyntax(targetType.Namespace)),
-                    UsingDirective(GenerateNamespaceSyntax("System"))
+                    UsingDirective(GenerateNamespaceSyntax(_extensionsOutputNamespace))
+
                 }))
                 .WithMembers(classDeclaration.Syntax)
                 .NormalizeWhitespace();
 
-            return new ExtensionFile { FileName = classDeclaration.ExtensionClassName, FileSource = result.ToFullString() };
+            return new ExtensionFile
+            { FileName = classDeclaration.ExtensionClassName, FileSource = result.ToFullString() };
         }
 
-        protected (string ExtensionClassName, SyntaxList<MemberDeclarationSyntax> Syntax) GenerateExtensionClass(Type sourceType, Type targetType, List<ClassMemberMappingInfo> sourceFieldsMappings, List<ClassMemberMappingInfo> targetFieldsMappings)
+        protected (string ExtensionClassName, SyntaxList<MemberDeclarationSyntax> Syntax) GenerateExtensionClass(
+            Type sourceType, Type targetType, List<ClassMemberMappingInfo> sourceFieldsMappings,
+            List<ClassMemberMappingInfo> targetFieldsMappings)
         {
             var sourceTypeName = sourceType.Name;
             var targetTypeName = targetType.Name;
@@ -180,6 +224,14 @@ namespace ConversionExtensionsGenerator
 
             var outputNamespaceSyntax = GenerateNamespaceSyntax(_extensionsOutputNamespace);
 
+            var methodsList = new List<MemberDeclarationSyntax>
+            {
+                GenerateMethodDeclaration(sourceTypeName, targetMethodName, targetVariableName, sourceVariableName, targetTypeName, sourceFieldsMappings),
+                GenerateCollectionMethodDeclaration(sourceTypeName, targetMethodName, targetVariableName, sourceVariableName, targetTypeName, sourceFieldsMappings),
+                GenerateMethodDeclaration(targetTypeName, sourceMethodName, sourceVariableName, targetVariableName, sourceTypeName, targetFieldsMappings),
+                GenerateCollectionMethodDeclaration(targetTypeName, sourceMethodName, sourceVariableName, targetVariableName, sourceTypeName, targetFieldsMappings),
+            };
+
             var result = SingletonList<MemberDeclarationSyntax>
             (
                 NamespaceDeclaration(outputNamespaceSyntax)
@@ -187,31 +239,31 @@ namespace ConversionExtensionsGenerator
                     (
                         ClassDeclaration(extensionClassName)
                             .WithModifiers(TokenList(Token(PublicKeyword), Token(StaticKeyword), Token(PartialKeyword)))
-                            .WithMembers(List(new MemberDeclarationSyntax[]
-                            {
-                                GenerateMethodDeclaration(sourceTypeName, sourceMethodName, targetVariableName, sourceVariableName, targetTypeName, sourceFieldsMappings),
-                                GenerateMethodDeclaration(targetTypeName, targetMethodName, sourceVariableName, targetVariableName, sourceTypeName, targetFieldsMappings),
-                            }))
+                            .WithMembers(List(methodsList))
                     ))
             );
 
             return (extensionClassName, result);
         }
 
-        protected MethodDeclarationSyntax GenerateMethodDeclaration(string returnClassName, string extensionMethodName, string inputVariableName, string returnVariableName, string inputClassName,
+        protected MethodDeclarationSyntax GenerateMethodDeclaration(string returnClassName, string extensionMethodName,
+            string inputVariableName, string returnVariableName, string inputClassName,
             List<ClassMemberMappingInfo> fieldsMappings)
         {
             var ifStatement =
                 IfStatement(
-                    BinaryExpression(EqualsExpression, IdentifierName(inputVariableName), LiteralExpression(NullLiteralExpression)),
+                    BinaryExpression(EqualsExpression, IdentifierName(inputVariableName),
+                        LiteralExpression(NullLiteralExpression)),
                     Block(ReturnStatement(LiteralExpression(NullLiteralExpression))));
 
             var returnVariableCreationStatement = LocalDeclarationStatement(
                 VariableDeclaration(IdentifierName(returnClassName))
                     .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier(returnVariableName))
-                        .WithInitializer(EqualsValueClause(ObjectCreationExpression(IdentifierName(returnClassName)).WithArgumentList(ArgumentList()))))));
+                        .WithInitializer(EqualsValueClause(ObjectCreationExpression(IdentifierName(returnClassName))
+                            .WithArgumentList(ArgumentList()))))));
 
-            var fieldsAssignmentExpressions = GenerateFieldsAssignments(returnVariableName, inputVariableName, fieldsMappings);
+            var fieldsAssignmentExpressions =
+                GenerateFieldsAssignments(returnVariableName, inputVariableName, fieldsMappings);
 
             var returnStatement = ReturnStatement(IdentifierName(returnVariableName));
 
@@ -224,11 +276,56 @@ namespace ConversionExtensionsGenerator
             statementsList.AddRange(fieldsAssignmentExpressions);
             statementsList.Add(returnStatement);
 
-            //TODO: Add this for extension method signature
             return MethodDeclaration(IdentifierName(returnClassName), Identifier(extensionMethodName))
                 .WithModifiers(TokenList(Token(PublicKeyword), Token(StaticKeyword)))
-                .WithParameterList(ParameterList(SingletonSeparatedList(Parameter(Identifier(inputVariableName)).WithModifiers(TokenList(Token(ThisKeyword))).WithType(IdentifierName(inputClassName)))))
+                .WithParameterList(ParameterList(SingletonSeparatedList(Parameter(Identifier(inputVariableName))
+                    .WithModifiers(TokenList(Token(ThisKeyword))).WithType(IdentifierName(inputClassName)))))
                 .WithBody(Block(statementsList));
+        }
+
+        protected MethodDeclarationSyntax GenerateCollectionMethodDeclaration(string returnClassName, string extensionMethodName, string inputVariableName, string returnVariableName, string inputClassName,
+            List<ClassMemberMappingInfo> fieldsMappings)
+        {
+            //TODO: Add option for names templates
+            var ifStatement = IfStatement(
+                BinaryExpression(EqualsExpression, IdentifierName($"{inputVariableName}Collection"), LiteralExpression(NullLiteralExpression)),
+                Block(SingletonList<StatementSyntax>(ReturnStatement(LiteralExpression(NullLiteralExpression)))));
+
+            var returnCollectionCreationStatement = LocalDeclarationStatement(
+                        VariableDeclaration(GenericName(Identifier("List")).WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList<TypeSyntax>(IdentifierName(returnClassName)))))
+                            .WithVariables(SingletonSeparatedList(
+                                VariableDeclarator(Identifier($"{returnVariableName}Collection"))
+                                .WithInitializer(EqualsValueClause(InvocationExpression(
+                                    MemberAccessExpression(SimpleMemberAccessExpression,
+                                    InvocationExpression(MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName($"{inputVariableName}Collection"), IdentifierName("Select")))
+                                            .WithArgumentList(ArgumentList(SingletonSeparatedList(
+                                                Argument(SimpleLambdaExpression(
+                                                    Parameter(Identifier("x")),
+                                                    InvocationExpression(MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName("x"), IdentifierName($"{inputClassName}To{returnClassName}")))
+                                                    ))))),
+                                        IdentifierName("ToList"))))))));
+
+            var returnStatement = ReturnStatement(IdentifierName($"{returnVariableName}Collection"));
+
+            var statementsList = new List<StatementSyntax>
+            {
+                ifStatement,
+                returnCollectionCreationStatement
+            };
+
+            statementsList.Add(returnStatement);
+
+            var result = MethodDeclaration(GenericName(Identifier("List"))
+                        .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList<TypeSyntax>(IdentifierName(returnClassName)))),
+                            Identifier($"{inputClassName}CollectionTo{returnClassName}Collection"))
+                        .WithModifiers(TokenList(new[] { Token(PublicKeyword), Token(StaticKeyword) }))
+                        .WithParameterList(ParameterList(SingletonSeparatedList(Parameter(Identifier($"{inputVariableName}Collection"))
+                            .WithModifiers(TokenList(Token(ThisKeyword)))
+                            .WithType(GenericName(Identifier(nameof(IEnumerable)))
+                                .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList<TypeSyntax>(IdentifierName(inputClassName))))))))
+                        .WithBody(Block(statementsList));
+
+            return result;
         }
 
         protected NameSyntax GenerateNamespaceSyntax(string usingNamespace)
@@ -255,27 +352,63 @@ namespace ConversionExtensionsGenerator
             return result;
         }
 
-        protected List<StatementSyntax> GenerateFieldsAssignments(string returnVariableName, string inputVariableName, List<ClassMemberMappingInfo> fieldsMapping)
+        protected List<StatementSyntax> GenerateFieldsAssignments(string returnVariableName, string inputVariableName,
+            List<ClassMemberMappingInfo> fieldsMappings)
         {
-            var result = new List<StatementSyntax>();
+            //TODO: Also dictionaries and other (inheritance), cases int -< enum or enum -> int
+            var statementSyntaxList = new List<StatementSyntax>();
 
-            foreach (var kvp in fieldsMapping)
+            foreach (var fieldMapping in fieldsMappings)
             {
-                var syntax = ExpressionStatement(AssignmentExpression(SimpleAssignmentExpression,
-                    MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName(returnVariableName), IdentifierName(kvp.SourceClassMemberName)),
-                    MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName(inputVariableName), IdentifierName(kvp.TargetClassMemberName)))
-                );
+                ExpressionSyntax expression = null;
 
-                result.Add(syntax);
+                if (IsEnum(fieldMapping.TargetClassMemberType))
+                {
+                    expression = CastExpression(IdentifierName(fieldMapping.SourceClassMemberType.Name),
+                        MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName(inputVariableName),
+                            IdentifierName(fieldMapping.TargetClassMemberName)));
+                }
+                else if (IsClassOrStruct(fieldMapping.TargetClassMemberType) &&
+                         !IsGenericCollection(fieldMapping.TargetClassMemberType))
+                {
+                    expression = InvocationExpression(MemberAccessExpression(SimpleMemberAccessExpression,
+                        MemberAccessExpression(SimpleMemberAccessExpression,
+                            IdentifierName(inputVariableName), IdentifierName(fieldMapping.TargetClassMemberName)),
+                        IdentifierName(
+                            $"{fieldMapping.TargetClassMemberType.Name}To{fieldMapping.SourceClassMemberType.Name}")));
+                }
+                else if (IsGenericCollection(fieldMapping.TargetClassMemberType))
+                {
+                    //TODO: Additional check for dictionaries
+                    var targetTypeName = fieldMapping.TargetClassMemberType.GenericTypeArguments.First().Name;
+                    var sourceTypeName = fieldMapping.SourceClassMemberType.GenericTypeArguments.First().Name;
+
+                    expression = InvocationExpression(MemberAccessExpression(SimpleMemberAccessExpression,
+                        MemberAccessExpression(SimpleMemberAccessExpression,
+                            IdentifierName(inputVariableName), IdentifierName(fieldMapping.TargetClassMemberName)),
+                        IdentifierName($"{targetTypeName}CollectionTo{sourceTypeName}Collection")));
+                }
+                else
+                {
+                    expression = MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName(inputVariableName),
+                        IdentifierName(fieldMapping.TargetClassMemberName));
+                }
+
+                var syntax = ExpressionStatement(AssignmentExpression(SimpleAssignmentExpression,
+                    MemberAccessExpression(SimpleMemberAccessExpression, IdentifierName(returnVariableName),
+                        IdentifierName(fieldMapping.SourceClassMemberName)),
+                    expression
+                ));
+
+                statementSyntaxList.Add(syntax);
             }
 
-            return result;
+            return statementSyntaxList;
         }
 
-        protected FieldsMappingResult GenerateFieldsAndPropertiesMappings(Type sourceType, Type targetType)
+        protected ClassMemberMappingResult GenerateFieldsAndPropertiesMappings(Type sourceType, Type targetType, List<ClassMappingInfo> classMappingInfos)
         {
             //TODO: Add checks for get/set, enum, collections, etc.
-
             var mappingsList = new List<ClassMemberMappingInfo>();
 
             var sourceProperties = sourceType.GetProperties().ToList();
@@ -287,10 +420,10 @@ namespace ConversionExtensionsGenerator
 
                 mappingsList.Add(new ClassMemberMappingInfo
                 {
-                    SourceClassFullName = sourceType.FullName,
+                    SourceClassType = sourceType,
                     SourceClassMemberName = sourceProperty.Name,
                     SourceClassMemberType = sourceProperty.PropertyType,
-                    TargetClassFullName = targetType.FullName,
+                    TargetClassType = targetType,
                     TargetClassMemberName = targetPropertyToMap?.Name,
                     TargetClassMemberType = targetPropertyToMap?.PropertyType
                 });
@@ -304,29 +437,29 @@ namespace ConversionExtensionsGenerator
                 {
                     mappingsList.Add(new ClassMemberMappingInfo
                     {
-                        SourceClassFullName = sourceType.FullName,
+                        SourceClassType = sourceType,
                         SourceClassMemberName = null,
                         SourceClassMemberType = null,
-                        TargetClassFullName = targetType.FullName,
+                        TargetClassType = targetType,
                         TargetClassMemberName = targetProperty.Name,
                         TargetClassMemberType = targetProperty.PropertyType
                     });
                 }
                 else
                 {
-                    if (!mappingsList.Any(x => x.SourceClassFullName == sourceType.FullName
-                        && x.SourceClassMemberName == sourcePropertyToMap.Name
-                        && x.SourceClassMemberType == sourcePropertyToMap.PropertyType
-                        && x.TargetClassFullName == targetType.FullName
-                        && x.TargetClassMemberName == targetProperty.Name
-                        && x.TargetClassMemberType == targetProperty.PropertyType))
+                    if (!mappingsList.Any(x => x.SourceClassType == sourceType
+                                               && x.SourceClassMemberName == sourcePropertyToMap.Name
+                                               && x.SourceClassMemberType == sourcePropertyToMap.PropertyType
+                                               && x.TargetClassType == targetType
+                                               && x.TargetClassMemberName == targetProperty.Name
+                                               && x.TargetClassMemberType == targetProperty.PropertyType))
                     {
                         mappingsList.Add(new ClassMemberMappingInfo
                         {
-                            SourceClassFullName = sourceType.FullName,
+                            SourceClassType = sourceType,
                             SourceClassMemberName = sourcePropertyToMap.Name,
                             SourceClassMemberType = sourcePropertyToMap.PropertyType,
-                            TargetClassFullName = targetType.FullName,
+                            TargetClassType = targetType,
                             TargetClassMemberName = targetProperty.Name,
                             TargetClassMemberType = targetProperty.PropertyType
                         });
@@ -343,10 +476,10 @@ namespace ConversionExtensionsGenerator
 
                 mappingsList.Add(new ClassMemberMappingInfo
                 {
-                    SourceClassFullName = sourceType.FullName,
+                    SourceClassType = sourceType,
                     SourceClassMemberName = sourceField.Name,
                     SourceClassMemberType = sourceField.FieldType,
-                    TargetClassFullName = targetType.FullName,
+                    TargetClassType = targetType,
                     TargetClassMemberName = targetFieldToMap?.Name,
                     TargetClassMemberType = targetFieldToMap?.FieldType
                 });
@@ -360,29 +493,29 @@ namespace ConversionExtensionsGenerator
                 {
                     mappingsList.Add(new ClassMemberMappingInfo
                     {
-                        SourceClassFullName = sourceType.FullName,
+                        SourceClassType = sourceType,
                         SourceClassMemberName = null,
                         SourceClassMemberType = null,
-                        TargetClassFullName = targetType.FullName,
+                        TargetClassType = targetType,
                         TargetClassMemberName = targetField.Name,
                         TargetClassMemberType = targetField.FieldType
                     });
                 }
                 else
                 {
-                    if (!mappingsList.Any(x => x.SourceClassFullName == sourceType.FullName
-                        && x.SourceClassMemberName == sourceFieldToMap.Name
-                        && x.SourceClassMemberType == sourceFieldToMap.FieldType
-                        && x.TargetClassFullName == targetType.FullName
-                        && x.TargetClassMemberName == targetField.Name
-                        && x.TargetClassMemberType == targetField.FieldType))
+                    if (!mappingsList.Any(x => x.SourceClassType == sourceType
+                                               && x.SourceClassMemberName == sourceFieldToMap.Name
+                                               && x.SourceClassMemberType == sourceFieldToMap.FieldType
+                                               && x.TargetClassType == targetType
+                                               && x.TargetClassMemberName == targetField.Name
+                                               && x.TargetClassMemberType == targetField.FieldType))
                     {
                         mappingsList.Add(new ClassMemberMappingInfo
                         {
-                            SourceClassFullName = sourceType.FullName,
+                            SourceClassType = sourceType,
                             SourceClassMemberName = sourceFieldToMap.Name,
                             SourceClassMemberType = sourceFieldToMap.FieldType,
-                            TargetClassFullName = targetType.FullName,
+                            TargetClassType = targetType,
                             TargetClassMemberName = targetField.Name,
                             TargetClassMemberType = targetField.FieldType
                         });
@@ -390,31 +523,51 @@ namespace ConversionExtensionsGenerator
                 }
             }
 
-            var result = new FieldsMappingResult();
+            var baseResult = AnalyzeClassMemberMappings(mappingsList, classMappingInfos);
+
+            var result = new ClassMemberMappingResult();
+            result.Errors.AddRange(baseResult.Errors);
+            result.Mappings = mappingsList;
+
+            return result;
+        }
+
+        private static BaseResult AnalyzeClassMemberMappings(List<ClassMemberMappingInfo> mappingsList, List<ClassMappingInfo> classMappingInfos)
+        {
+            var baseResult = new BaseResult();
 
             // remove unmapped fields
-            var unmapped = mappingsList.Where(x => (x.TargetClassMemberName == null && x.TargetClassMemberType == null) || (x.SourceClassMemberName == null && x.SourceClassMemberType == null)).ToList();
+            var unmapped = mappingsList.Where(x =>
+                (x.TargetClassMemberName == null && x.TargetClassMemberType == null) ||
+                (x.SourceClassMemberName == null && x.SourceClassMemberType == null)).ToList();
 
             foreach (var item in unmapped)
             {
-                result.Errors.Add(new GenerationLogItem(LogLevel.Error, $"Cannot map field/property. Source Class: '{item.SourceClassFullName}' Source Name: '{item.SourceClassMemberName}', Target Class: '{item.TargetClassFullName}', Target Name: '{item.TargetClassMemberName}'"));
+                baseResult.Errors.Add(new GenerationLogItem(LogLevel.Error,
+                    $"Cannot map field/property. Source Class: '{item.SourceClassType.FullName}' Source Name: '{item.SourceClassMemberName}', Target Class: '{item.TargetClassType.FullName}', Target Name: '{item.TargetClassMemberName}'"));
             }
 
-            mappingsList.RemoveAll(x => (x.TargetClassMemberName == null && x.TargetClassMemberType == null) || (x.SourceClassMemberName == null && x.SourceClassMemberType == null));
+            unmapped.ForEach(x => mappingsList.Remove(x));
 
             //TODO: Add fluent rules, also checks for possible extensions for classes/structs (maybe also possible auto-conversions of int to long, list to ienumerable, etc.)
             // remove fields with different types 
-            var differentTypes = mappingsList.Where(x => x.TargetClassMemberType != x.SourceClassMemberType).ToList();
+            var differentTypes = mappingsList.Where(x =>
+                    x.TargetClassMemberType != x.SourceClassMemberType &&
+                    (!classMappingInfos.Any(y =>
+                        (y.TargetClassType == x.TargetClassType && y.SourceClassType == x.SourceClassType) ||
+                        (y.TargetClassType == x.SourceClassType && y.SourceClassType == x.TargetClassType))
+                    ))
+                .ToList();
 
             foreach (var item in differentTypes)
             {
-                result.Errors.Add(new GenerationLogItem(LogLevel.Error, $"Cannot map field/property with different types. Source Class: '{item.SourceClassFullName}' Source Name: '{item.SourceClassMemberName}', Source Type: '{item.SourceClassMemberType.FullName}', Target Class: '{item.TargetClassFullName}', Target Name: '{item.TargetClassMemberName}', Target Type: '{item.TargetClassMemberType.FullName}'"));
+                baseResult.Errors.Add(new GenerationLogItem(LogLevel.Error,
+                    $"Cannot map field/property with different types. Source Class: '{item.SourceClassType.FullName}' Source Name: '{item.SourceClassMemberName}', Source Type: '{item.SourceClassMemberType.FullName}', Target Class: '{item.TargetClassType.FullName}', Target Name: '{item.TargetClassMemberName}', Target Type: '{item.TargetClassMemberType.FullName}'"));
             }
 
-            mappingsList.RemoveAll(x => x.TargetClassMemberType != x.SourceClassMemberType);
+            differentTypes.ForEach(x => mappingsList.Remove(x));
 
-            result.Mappings = mappingsList;
-            return result;
+            return baseResult;
         }
     }
 }

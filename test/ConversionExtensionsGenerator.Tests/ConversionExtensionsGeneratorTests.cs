@@ -7,11 +7,19 @@ using ConversionExtensionsGenerator.Tests.TestExtensions;
 using FizzWare.NBuilder;
 using KellermanSoftware.CompareNetObjects;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace ConversionExtensionsGenerator.Tests
 {
     public class ConversionExtensionsGeneratorTests
     {
+        private readonly ITestOutputHelper _output;
+
+        public ConversionExtensionsGeneratorTests(ITestOutputHelper output)
+        {
+            _output = output;
+        }
+
         [Fact]
         public void GenerateConversionExtensionsTest()
         {
@@ -25,7 +33,10 @@ namespace ConversionExtensionsGenerator.Tests
                 File.WriteAllText(Path.Combine(Path.GetFullPath("../../../TestExtensions"), $"{outputFile.FileName}.cs"), outputFile.FileSource);
             }
 
-            Assert.True(!outputFiles.Errors.Any(), string.Join(Environment.NewLine, outputFiles.Errors.Select(x => $"{x.LogLevel}. {x.Message}")));
+            //Show messages about unmapped object/fields/properties
+            _output.WriteLine(string.Join(Environment.NewLine, outputFiles.Errors.Select(x => $"{x.LogLevel}. {x.Message}")));
+
+            Assert.False(outputFiles.Errors.Count == 0);
         }
 
         [Fact]
@@ -34,9 +45,18 @@ namespace ConversionExtensionsGenerator.Tests
             var compareLogic = new CompareLogic();
             compareLogic.Config.IgnoreObjectTypes = true;
 
-            var plainEntity = Builder<PlainEntity>.CreateNew().Build();
+            var plainEntity = Builder<PlainEntity>.CreateNew()
+                .And(x => x.PlainEntityClass2Field = Builder<PlainEntity2>.CreateNew()
+                    .And(y => y.PlainEntitiesCollectionField = Builder<PlainEntity3>.CreateListOfSize(10).Build())
+                    .Build())
+                .And(x => x.PlainEntitiesCollectionField = Builder<PlainEntity2>.CreateListOfSize(10).Build())
+                .And(x => x.PlainEntityClass2Property = Builder<PlainEntity2>.CreateNew()
+                .And(y => y.PlainEntitiesCollectionField = Builder<PlainEntity3>.CreateListOfSize(10).Build())
+                    .Build())
+                .And(x => x.PlainEntitiesCollectionProperty = Builder<PlainEntity2>.CreateListOfSize(10).Build())
+                .Build();
 
-            var entityModel = plainEntity.PlainEntityModelToPlainEntity();
+            var entityModel = plainEntity.PlainEntityToPlainEntityModel();
 
             var result = compareLogic.Compare(plainEntity, entityModel);
 

@@ -3,7 +3,7 @@
 namespace ConversionExtensionsGenerator
 {
 
-    public class FieldsMappingResult : BaseResult
+    public class ClassMemberMappingResult : BaseResult
     {
         public List<ClassMemberMappingInfo> Mappings { get; set; } = new List<ClassMemberMappingInfo>();
     }
