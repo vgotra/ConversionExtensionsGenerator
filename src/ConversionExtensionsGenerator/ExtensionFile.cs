@@ -1,9 +1,8 @@
-﻿namespace ConversionExtensionsGenerator
-{
-    public class ExtensionFile
-    {
-        public string FileName { get; set; }
+﻿namespace ConversionExtensionsGenerator;
 
-        public string FileSource { get; set; }
-    }
+public class ExtensionFile
+{
+    public string FileName { get; set; }
+
+    public string FileSource { get; set; }
 }

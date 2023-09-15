@@ -1,6 +1,5 @@
-﻿namespace ConversionExtensionsGenerator.Tests.TestExtensions
+﻿namespace ConversionExtensionsGenerator.Tests.TestExtensions;
+
+internal class Dummy
 {
-    internal class Dummy
-    {
-    }
 }

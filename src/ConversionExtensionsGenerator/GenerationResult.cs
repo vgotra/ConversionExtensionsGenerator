@@ -1,9 +1,6 @@
-﻿using System.Collections.Generic;
+﻿namespace ConversionExtensionsGenerator;
 
-namespace ConversionExtensionsGenerator
+public class GenerationResult : BaseResult
 {
-    public class GenerationResult : BaseResult
-    {
-        public List<ExtensionFile> ExtensionFiles { get; set; } = new List<ExtensionFile>();
-    }
+    public List<ExtensionFile> ExtensionFiles { get; } = new();
 }

@@ -1,9 +1,6 @@
-﻿using System.Collections.Generic;
+﻿namespace ConversionExtensionsGenerator;
 
-namespace ConversionExtensionsGenerator
+public class ClassMappingResult : BaseResult
 {
-    public class ClassMappingResult : BaseResult
-    {
-        public List<ClassMappingInfo> Mappings { get; set; } = new List<ClassMappingInfo>();
-    }
+    public List<ClassMappingInfo> Mappings { get; } = new();
 }

@@ -1,11 +1,8 @@
-﻿using System;
+﻿namespace ConversionExtensionsGenerator;
 
-namespace ConversionExtensionsGenerator
+public class ClassMappingInfo
 {
-    public class ClassMappingInfo
-    {
-        public Type SourceClassType { get; set; }
+    public Type SourceClassType { get; set; }
 
-        public Type TargetClassType { get; set; }
-    }
+    public Type TargetClassType { get; set; }
 }

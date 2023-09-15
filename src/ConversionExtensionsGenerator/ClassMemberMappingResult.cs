@@ -1,10 +1,6 @@
-﻿using System.Collections.Generic;
+﻿namespace ConversionExtensionsGenerator;
 
-namespace ConversionExtensionsGenerator
+public class ClassMemberMappingResult : BaseResult
 {
-
-    public class ClassMemberMappingResult : BaseResult
-    {
-        public List<ClassMemberMappingInfo> Mappings { get; set; } = new List<ClassMemberMappingInfo>();
-    }
+    public List<ClassMemberMappingInfo> Mappings { get; set; } = new();
 }
